@@ -54,6 +54,8 @@
 
 #define MAXMENUARGS  16
 
+extern uint32_t dbflags;
+
 // XXX this should not be in this file
 void
 getinterval(time_t s1, uint32_t ns1, time_t s2, uint32_t ns2,
@@ -437,6 +439,7 @@ static const char *opsmenu[] = {
 	"[sync]    Sync filesystems          ",
 	"[panic]   Intentional panic         ",
 	"[q]       Quit and shut down        ",
+	"[dts]     Enable DB_THREADS debugging",
 	NULL
 };
 
@@ -519,6 +522,11 @@ cmd_mainmenu(int n, char **a)
 	return 0;
 }
 
+static int  cmd_enableDTS(){
+	dbflags = dbflags | DB_THREADS;
+	return 0;
+}
+
 ////////////////////////////////////////
 //
 // Command table.
@@ -548,6 +556,7 @@ static struct {
 	{ "q",		cmd_quit },
 	{ "exit",	cmd_quit },
 	{ "halt",	cmd_quit },
+	{ "dts",	cmd_enableDTS },
 
 #if OPT_SYNCHPROBS
 	/* in-kernel synchronization problem(s) */
