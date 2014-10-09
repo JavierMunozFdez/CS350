@@ -162,10 +162,11 @@ lock_create(const char *name)
                 kfree(lock);
                 return NULL;
         }
-        
         // add stuff here as needed
-        
+        spinlock_init(lock->lock_sLock);
+
         return lock;
+
 }
 
 void
@@ -174,7 +175,7 @@ lock_destroy(struct lock *lock)
         KASSERT(lock != NULL);
 
         // add stuff here as needed
-        
+        spinlock_cleanup(lock->lock_sLock);
         kfree(lock->lk_name);
         kfree(lock);
 }
@@ -183,27 +184,36 @@ void
 lock_acquire(struct lock *lock)
 {
         // Write this
+        KASSERT(lock != NULL);
 
-        (void)lock;  // suppress warning until code gets written
+        /*
+         * May not block in an interrupt handler.
+         *
+         * For robustness, always check, even if we can actually
+         * complete the P without blocking.
+         */
+        KASSERT(curthread->t_in_interrupt == false);
+
+	spinlock_acquire(lock->lock_sLock);
 }
 
-void
-lock_release(struct lock *lock)
-{
-        // Write this
-
-        (void)lock;  // suppress warning until code gets written
-}
 
 bool
 lock_do_i_hold(struct lock *lock)
 {
         // Write this
-
-        (void)lock;  // suppress warning until code gets written
-
-        return true; // dummy until code gets written
+        return spinlock_do_i_hold(lock->lock_sLock);
 }
+
+
+void
+lock_release(struct lock *lock)
+{
+        // Write this
+	KASSERT(lock_do_i_hold(lock));
+	spinlock_release(lock->lock_sLock);
+}
+
 
 ////////////////////////////////////////////////////////////
 //
