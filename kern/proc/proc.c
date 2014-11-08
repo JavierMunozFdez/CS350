@@ -42,6 +42,9 @@
  * process that will have more than one thread is the kernel process.
  */
 
+// For use for the proc array
+#define PROCINLINE
+
 #include <types.h>
 #include <proc.h>
 #include <current.h>
@@ -49,7 +52,14 @@
 #include <vnode.h>
 #include <vfs.h>
 #include <synch.h>
-#include <kern/fcntl.h>  
+#include <kern/fcntl.h>
+#include <limits.h>
+#include <syscall.h>
+#include <bitmap.h>
+#include <array.h>
+#include <kern/errno.h>
+#include <kern/unistd.h>
+#include <kern/wait.h>
 
 /*
  * The process for the kernel; this holds all the kernel-only threads.
@@ -90,9 +100,53 @@ proc_create(const char *name)
 		return NULL;
 	}
 
-	threadarray_init(&proc->p_threads);
-	spinlock_init(&proc->p_lock);
+	// Initialize the proc_exit_lock
+	proc->proc_exit_lock = lock_create(name);
+	if (proc->proc_exit_lock == NULL) {
+		kfree(proc->p_name);
+		kfree(proc);
+		return NULL;
+	}
 
+	// Initialize the lock for the children array
+ 	proc->proc_children_lock = lock_create(name);
+ 	if (proc->proc_children_lock == NULL) {
+		 lock_destroy(proc->proc_exit_lock);
+		 kfree(proc->p_name);
+		 kfree(proc);
+		 return NULL;
+	}
+
+	// Initialize the condition variable that will be needed for waitpid
+	proc->proc_exit_cv = cv_create(name);
+	if (proc->proc_exit_cv == NULL) {
+		lock_destroy(proc->proc_exit_lock);
+		lock_destroy(proc->proc_children_lock);
+		kfree(proc->p_name);
+		kfree(proc);
+		return NULL;
+	}
+
+	int rtn_val = proc_assign_pid((pid_t*)&proc->pid);
+	if (rtn_val) {
+		lock_destroy(proc->proc_exit_lock);
+		lock_destroy(proc->proc_children_lock);
+		cv_destroy(proc->proc_exit_cv);
+		kfree(proc->p_name);
+		kfree(proc);
+		return NULL;
+	}
+
+
+	threadarray_init(&proc->p_threads);
+	// Initialize the proc array siilar to threadarray
+	procarray_init(&proc->proc_children);
+	spinlock_init(&proc->p_lock);
+	
+	// Proc has just been created, so set the exited predicate to false
+	proc->proc_exited = false;
+	proc->proc_parent_exited = false;
+	proc->proc_exit_status = 0;
 	/* VM fields */
 	proc->p_addrspace = NULL;
 
@@ -165,6 +219,18 @@ proc_destroy(struct proc *proc)
 
 	threadarray_cleanup(&proc->p_threads);
 	spinlock_cleanup(&proc->p_lock);
+	//Cleanup all proc stuff for A2
+	int numChildren = procarray_num(&proc->proc_children);
+		for (int i = numChildren - 1; i >= 0; i--) {
+		procarray_remove(&proc->proc_children, i);
+	}
+	procarray_cleanup(&proc->proc_children);
+	lock_destroy(proc->proc_exit_lock);
+	lock_destroy(proc->proc_children_lock);
+	cv_destroy(proc->proc_exit_cv);
+
+	// Proc is being destroyed, so now the pid can be re-used
+	proc_set_pid_unused(proc->pid);
 
 	kfree(proc->p_name);
 	kfree(proc);
@@ -187,12 +253,173 @@ proc_destroy(struct proc *proc)
 
 }
 
+
+
+// Sets the exit status of the process to true and encodes the exit status
+void proc_set_exit_status(struct proc * proc, const int exitcode, const int type) {
+	switch(type) {
+		case __WEXITED:
+		proc->proc_exit_status = _MKWAIT_EXIT(exitcode);
+		break;
+		case __WSIGNALED:
+		proc->proc_exit_status = _MKWAIT_SIG(exitcode);
+		break;
+		case __WCORED:
+		proc->proc_exit_status = _MKWAIT_CORE(exitcode);
+		break;
+		case __WSTOPPED:
+		proc->proc_exit_status = _MKWAIT_STOP(exitcode);
+		break;
+	}
+	proc->proc_exited = true;
+}
+
+
+
+// Assigns the next avail. pid to the process
+int proc_assign_pid(int * proc_pid_addr_ptr) {
+	if (proc_pid_addr_ptr == NULL) {
+		return EINVAL;
+	}else {
+		spinlock_acquire(&proc_id_map_spinlock);
+		int rtn = bitmap_alloc(proc_id_map, (unsigned*)proc_pid_addr_ptr);
+		spinlock_release(&proc_id_map_spinlock);
+		return rtn;
+	}
+}
+
+// Sets the given pid to unused, so that it can be assigned later on.
+void proc_set_pid_unused(const int pid) {
+	KASSERT(pid > 0 && pid < PID_MAX);
+	spinlock_acquire(&proc_id_map_spinlock);
+	bitmap_unmark(proc_id_map, pid);
+	spinlock_release(&proc_id_map_spinlock);
+}
+
+/*
+ * Finds the children of the given process proc that matches the process
+ * id child_pid, and returns it. If there is no child with the given pid,
+ * returns NULL.
+ */
+struct proc * proc_find_child(struct proc * proc, const int child_pid) {
+	struct proc * child_proc = NULL;
+	if (proc == NULL) {
+		return NULL;
+	}
+	// Acquire the lock for the children of the given process
+	lock_acquire(proc->proc_children_lock);
+	// Get the number of children this process has
+	int num_children = procarray_num(&proc->proc_children);
+	for (int i = 0; i < num_children; i++) {
+		struct proc * child = procarray_get(&proc->proc_children, i);
+		if (child->pid == child_pid) {
+			child_proc = child;
+			break;
+		}
+	}
+	lock_release(proc->proc_children_lock);
+	return child_proc;
+}
+
+
+/*
+ * Called when a process exits.
+ * Notifies all the children that the parent has exited, and
+ * destroys any children that were semi-destroyed in the past, since now
+ * that the parent is destroyed, there is no relationship.
+ */
+void proc_exited_signal(struct proc *proc) {
+	lock_acquire(proc->proc_children_lock);
+	unsigned int i;
+	for (i=0; i < procarray_num(&proc->proc_children); i++) {
+		struct proc * child = procarray_get(&proc->proc_children, i);
+		lock_acquire(child->proc_exit_lock);
+		if (child->proc_exited) {
+			// Destroy all the semi-destroyed children, since there is no
+			// longer a parent-child relationship or interest.
+			lock_release(child->proc_exit_lock);
+			proc_destroy(child);
+		} else {
+			child->proc_parent_exited = true;
+			lock_release(child->proc_exit_lock);
+		}
+	}
+	lock_release(proc->proc_children_lock);
+}
+
+/*
+ * When a process calls waitpid on pid, this function checks to make sure that
+ * a process with pid exists , and
+ * the process is a child of the process calling waitpid
+ */
+int waitpid_interested_error(const int pid) {
+	if ( pid <= 0 || pid >= PID_MAX){
+		return EINVAL;
+	}
+	spinlock_acquire(&proc_id_map_spinlock);
+	int is_set = bitmap_isset(proc_id_map, pid);
+	spinlock_release(&proc_id_map_spinlock);
+	return is_set? ECHILD:ESRCH;
+}
+
+
+/*
+ * Semi-destroys the process. This is required because once a child process
+ * exits, the parent child may still need its exit code, so we do not completely
+ * destroy a process once a process exits. We leave it to the parent upon exit.
+ * Once the parent process exits, the parent process
+ * will ensure to fully destroy all the semi-destroyed children.
+ * This mechanism is useful for waitpid, but other approaches are possible.
+ */
+void proc_semi_destroy(struct proc *proc) {
+	
+	KASSERT(proc != NULL);
+	KASSERT(proc != kproc);
+	
+	if (proc->p_cwd) {
+		VOP_DECREF(proc->p_cwd);
+		proc->p_cwd = NULL;
+	}
+
+
+
+	if (proc->p_addrspace) {
+		struct addrspace *as;
+		as_deactivate();
+		as = curproc_setas(NULL);
+		as_destroy(as);
+	}
+
+
+	threadarray_cleanup(&proc->p_threads);
+	spinlock_cleanup(&proc->p_lock);
+	kprintf("cde %d: %d\n",proc->pid,proc_count);
+// NOTICE how we do not clean up the entire process
+	P(proc_count_mutex);
+        KASSERT(proc_count > 0);
+        proc_count--;
+        /* signal the kernel menu thread if the process count has reached zero */
+        if (proc_count == 0) {
+          V(no_proc_sem);
+        }
+        V(proc_count_mutex);
+}
+
+
 /*
  * Create the process structure for the kernel.
  */
 void
 proc_bootstrap(void)
 {
+  // Before creating the kernel process, initialize the pid_bitmap
+  // so that the kernel proc can be assigned a pid starting at 0
+  spinlock_init(&proc_id_map_spinlock);
+  proc_id_map = bitmap_create(PID_MAX);
+  if (proc_id_map == NULL) {
+	panic("failed to initialize the pid map for pid generation\n");
+  }
+  // Ready to create the kernel process
   kproc = proc_create("[kernel]");
   if (kproc == NULL) {
     panic("proc_create for kproc failed\n");
@@ -271,7 +498,36 @@ proc_create_runprogram(const char *name)
 	V(proc_count_mutex);
 #endif // UW
 
+	// Add this new proc as a child to the parent proc
+	lock_acquire(curproc->proc_children_lock);
+	if(procarray_add(&curproc->proc_children, proc, NULL)) {
+		proc_destroy(proc);
+		lock_release(curproc->proc_children_lock);
+		return NULL;
+	}
+	lock_release(curproc->proc_children_lock);
+
 	return proc;
+}
+
+struct proc * proc_fork(struct proc * proc){
+	struct proc *child_proc;
+	if (proc == NULL) {
+		return NULL;
+	}
+	child_proc = proc_create_runprogram(proc->p_name);
+	struct addrspace * parent_as = curproc_getas();
+	struct addrspace * child_as = NULL;
+	if (parent_as != NULL) {
+		// Copy the parent address space to the child address space
+		as_copy(parent_as, &child_as);
+		if (child_as == NULL) {
+			return NULL;
+		}
+	}
+	// Set the childs address space
+	child_proc->p_addrspace = child_as;
+	return child_proc;
 }
 
 /*

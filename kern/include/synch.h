@@ -77,8 +77,7 @@ struct lock {
         char *lk_name;
 	struct spinlock lock_sLock;
 	struct wchan *lock_wchan;
-	volatile int lk_status;
-	struct thread *t;
+	volatile struct thread *t;
         // add what you need here
         // (don't forget to mark things volatile as needed)
 };

@@ -38,12 +38,29 @@
 
 #include <spinlock.h>
 #include <thread.h> /* required for struct threadarray */
+#include <synch.h>
+#include <limits.h>
+#include <opt-A2.h>
+#include <array.h>
+
 
 struct addrspace;
 struct vnode;
+//struct fdesc;
 #ifdef UW
 struct semaphore;
 #endif // UW
+struct proc;
+
+// Code for creating a list of processes
+#ifndef PROCINLINE
+#define PROCINLINE INLINE
+#endif
+
+DECLARRAY(proc);
+DEFARRAY(proc, PROCINLINE);
+
+
 
 /*
  * Process structure.
@@ -58,7 +75,25 @@ struct proc {
 
 	/* VFS */
 	struct vnode *p_cwd;		/* current working directory */
+	
+	const pid_t pid; /* the ID of this process */
 
+	// The exit status of this processor
+	volatile int proc_exit_status;
+	// Predicate to determine if this process has already exited
+	volatile bool proc_exited;
+	// Predicate to determine if the parent of this process has exited
+	volatile bool proc_parent_exited;
+	// lock used for the children array of this process for mutex
+	struct lock * proc_children_lock;
+	// lock and cv for when the process waits for child to exit (waitpid)
+	struct lock * proc_exit_lock;
+	struct cv * proc_exit_cv;
+	// List of chilren
+	struct procarray proc_children;
+	
+		
+		
 #ifdef UW
   /* a vnode to refer to the console device */
   /* this is a quick-and-dirty way to get console writes working */
@@ -74,6 +109,28 @@ struct proc {
 /* This is the process structure for the kernel and for kernel-only threads. */
 extern struct proc *kproc;
 
+// bitmap used for process ids
+struct bitmap * proc_id_map;
+// spinlock for the bitmap
+struct spinlock proc_id_map_spinlock;
+
+// Set the exit status of the proc to exitcode
+void proc_set_exit_status ( struct proc *proc, const int exitcode, const int type);
+
+// Finds any child of the process proc that has the id pid
+struct proc * proc_find_child(struct proc * proc, const int pid);
+
+// Notifies the children of the process proc that their parent has exited
+void proc_exited_signal ( struct proc * proc);
+
+// Handles the situation where the process we are wiating for 
+// is not interested in the calling process
+int waitpid_interested_error(const int pid);
+
+// Semi destroys the process
+void proc_semi_destroy(struct proc *proc);
+
+
 /* Semaphore used to signal when there are no more processes */
 #ifdef UW
 extern struct semaphore *no_proc_sem;
@@ -84,6 +141,9 @@ void proc_bootstrap(void);
 
 /* Create a fresh process for use by runprogram(). */
 struct proc *proc_create_runprogram(const char *name);
+
+// Creates a forked process of the given process proc
+struct proc *proc_fork(struct proc * proc);
 
 /* Destroy a process. */
 void proc_destroy(struct proc *proc);
@@ -99,6 +159,14 @@ struct addrspace *curproc_getas(void);
 
 /* Change the address space of the current process, and return the old one. */
 struct addrspace *curproc_setas(struct addrspace *);
+
+// Assigns the next available pid to the ptr that points to the pid field of the proc
+int proc_assign_pid(int * proc_pid_addr_ptr);
+
+// When a process exits, and no one is interested in the proccess anymore, sets the pid
+// to be reused.
+void proc_set_pid_unused(const int pid);
+
 
 
 #endif /* _PROC_H_ */
