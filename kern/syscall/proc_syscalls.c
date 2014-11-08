@@ -17,9 +17,6 @@ void sys__exit(int exitcode) {
 
   struct addrspace *as;
   struct proc *p = curproc;
-  /* for now, just include this to keep the compiler from complaining about
-     an unused variable */
-  (void)exitcode;
 
   DEBUG(DB_SYSCALL,"Syscall: _exit(%d)\n",exitcode);
 
@@ -35,14 +32,28 @@ void sys__exit(int exitcode) {
   as = curproc_setas(NULL);
   as_destroy(as);
 
-  /* detach this thread from its process */
-  /* note: curproc cannot be used after this call */
-  proc_remthread(curthread);
-
-  /* if this is the last user process in the system, proc_destroy()
-     will wake up the kernel menu thread */
-  proc_destroy(p);
-  
+  lock_acquire(p->proc_exit_lock);
+  if(!p->proc_parent_exited){
+	// Parent didnt exit yet, so we must only semi-destroy the proc
+	proc_set_exit_status(p,exitcode);
+	cv_broadcast(p->proc_exit_cv, p->proc_exit_lock);
+	proc_exited_signal(p);
+        /* detach this thread from its process */
+        /* note: curproc cannot be used after this call */
+        proc_remthread(curthread);
+	// semi_destroy will release the proc_exit_lock for us.
+	proc_semi_destroy(p);
+  }else{
+	proc_exited_signal(p);
+	lock_release(p->proc_exit_lock);
+  	/* detach this thread from its process */
+  	/* note: curproc cannot be used after this call */
+	proc_remthread(curthread);
+	/* if this is the last user process in the system, proc_destroy()
+        will wake up the kernel menu thread */
+	proc_destroy(p);
+  }
+ 
   thread_exit();
   /* thread_exit() does not return, so we should never get here */
   panic("return from thread_exit in sys_exit\n");
@@ -53,9 +64,8 @@ void sys__exit(int exitcode) {
 int
 sys_getpid(pid_t *retval)
 {
-  /* for now, this is just a stub that always returns a PID of 1 */
-  /* you need to fix this to make it work properly */
-  *retval = 1;
+  struct proc *p = curproc;
+  *retval = p->pid;
   return(0);
 }
 
@@ -70,20 +80,24 @@ sys_waitpid(pid_t pid,
   int exitstatus;
   int result;
 
-  /* this is just a stub implementation that always reports an
-     exit status of 0, regardless of the actual exit status of
-     the specified process.   
-     In fact, this will return 0 even if the specified process
-     is still running, and even if it never existed in the first place.
-
-     Fix this!
-  */
+  if (status == NULL) {
+	return EFAULT;
+  }
 
   if (options != 0) {
     return(EINVAL);
   }
-  /* for now, just pretend the exitstatus is 0 */
-  exitstatus = 0;
+
+  struct proc * child_proc = proc_find_child(curproc, pid);
+  if (child_proc == NULL) {
+  	return waitpid_interested_error(pid);
+  }
+
+  if(!child_proc->proc_exited){
+	cv_wait(child_proc->proc_exit_cv, child_proc->proc_exit_lock);
+  }
+
+  exitstatus = child_proc->proc_exit_status;
   result = copyout((void *)&exitstatus,status,sizeof(int));
   if (result) {
     return(result);
