@@ -393,7 +393,6 @@ void proc_semi_destroy(struct proc *proc) {
 
 	threadarray_cleanup(&proc->p_threads);
 	spinlock_cleanup(&proc->p_lock);
-	kprintf("cde %d: %d\n",proc->pid,proc_count);
 // NOTICE how we do not clean up the entire process
 //	P(proc_count_mutex);
 //        KASSERT(proc_count > 0);

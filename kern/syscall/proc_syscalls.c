@@ -36,14 +36,14 @@ void sys__exit(int exitcode, int type) {
   lock_acquire(p->proc_exit_lock);
 
  
- if(!p->proc_parent_exited && p->pid != 1){
+ if(!p->proc_parent_exited && p->pid > 1){
 	
 
 	// Parent didnt exit yet, so we must only semi-destroy the proc
 	proc_set_exit_status(p,exitcode, type);
 
 	
-cv_broadcast(p->proc_exit_cv, p->proc_exit_lock);
+	cv_broadcast(p->proc_exit_cv, p->proc_exit_lock);
 
 
 	proc_exited_signal(p);
@@ -64,7 +64,7 @@ cv_broadcast(p->proc_exit_cv, p->proc_exit_lock);
 	lock_release(p->proc_exit_lock);
   	/* detach this thread from its process */
   	/* note: curproc cannot be used after this call */
-	//proc_remthread(curthread);
+	proc_remthread(curthread);
 	/* if this is the last user process in the system, proc_destroy()
         will wake up the kernel menu thread */
 	proc_destroy(p);
@@ -108,11 +108,13 @@ sys_waitpid(pid_t pid,
   	return waitpid_interested_error(pid);
   }
 
+  lock_acquire(child_proc->proc_exit_lock);
   if(!child_proc->proc_exited){
 	cv_wait(child_proc->proc_exit_cv, child_proc->proc_exit_lock);
   }
 
   exitstatus = child_proc->proc_exit_status;
+  lock_release(child_proc->proc_exit_lock);
   result = copyout((void *)&exitstatus,status,sizeof(int));
   if (result) {
     return(result);
