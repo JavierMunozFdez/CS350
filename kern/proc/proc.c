@@ -395,14 +395,14 @@ void proc_semi_destroy(struct proc *proc) {
 	spinlock_cleanup(&proc->p_lock);
 	kprintf("cde %d: %d\n",proc->pid,proc_count);
 // NOTICE how we do not clean up the entire process
-	P(proc_count_mutex);
-        KASSERT(proc_count > 0);
-        proc_count--;
+//	P(proc_count_mutex);
+//        KASSERT(proc_count > 0);
+//        proc_count--;
         /* signal the kernel menu thread if the process count has reached zero */
-        if (proc_count == 0) {
-          V(no_proc_sem);
-        }
-        V(proc_count_mutex);
+//        if (proc_count == 0) {
+//          V(no_proc_sem);
+//        }
+//        V(proc_count_mutex);
 }
 
 

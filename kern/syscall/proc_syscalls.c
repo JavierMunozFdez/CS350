@@ -36,7 +36,7 @@ void sys__exit(int exitcode, int type) {
   lock_acquire(p->proc_exit_lock);
 
  
- if(!p->proc_parent_exited){
+ if(!p->proc_parent_exited && p->pid != 1){
 	
 
 	// Parent didnt exit yet, so we must only semi-destroy the proc
