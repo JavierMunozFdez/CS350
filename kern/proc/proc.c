@@ -509,6 +509,20 @@ proc_create_runprogram(const char *name)
 	return proc;
 }
 
+void proc_clear_as(struct proc *proc) {
+	KASSERT(proc != NULL);
+	KASSERT(proc != kproc);
+	
+	if (proc->p_addrspace) {
+		struct addrspace *as;
+		as_deactivate();
+		as = curproc_setas(NULL);
+		as_destroy(as);
+	}
+	
+}
+
+
 struct proc * proc_fork(struct proc * proc){
 	struct proc *child_proc;
 	if (proc == NULL) {

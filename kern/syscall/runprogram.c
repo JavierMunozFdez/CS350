@@ -44,6 +44,7 @@
 #include <vfs.h>
 #include <syscall.h>
 #include <test.h>
+#include <copyinout.h>
 
 /*
  * Load program "progname" and start running it in usermode.
@@ -52,11 +53,15 @@
  * Calls vfs_open on progname and thus may destroy it.
  */
 int
-runprogram(char *progname)
+runprogram(char *progname, unsigned long argc, char** argv)
 {
+	if(argc > 64){
+		return E2BIG;
+	}
 	struct addrspace *as;
 	struct vnode *v;
 	vaddr_t entrypoint, stackptr;
+	vaddr_t cur_ptr;
 	int result;
 
 	/* Open the file. */
@@ -97,10 +102,55 @@ runprogram(char *progname)
 		return result;
 	}
 
+
+        char* args = kmalloc(ARG_MAX);
+        size_t * arg_offsets = kmalloc(argc * sizeof(size_t));
+        int offset = 0;
+        for(unsigned int i = 0; i < argc; i++){
+                //char* arg = kmalloc(ARG_MAX);
+		char* arg = argv[i];
+                size_t arg_len = strlen(arg);
+		if(offset + arg_len+1 > ARG_MAX){
+			return E2BIG;
+		}
+                strcpy(args+offset,arg);
+                arg_offsets[i] = offset;
+                offset += ROUNDUP(arg_len+1,8);
+                //argv[i] = arg;
+        }
+
+	cur_ptr = stackptr;
+        cur_ptr -= offset;
+	result = copyout(args, (userptr_t)cur_ptr, offset);
+        if(result != 0){
+                return result;
+        }
+
+
+        userptr_t * arg_offsets_up = kmalloc(sizeof(userptr_t) * (argc+1));
+        for(unsigned int i = 0; i < argc; i++){
+                userptr_t ptr = (userptr_t)cur_ptr +  arg_offsets[i];
+                arg_offsets_up[i] = ptr;
+        }
+        arg_offsets_up[argc] = NULL;
+
+        cur_ptr -= sizeof(userptr_t) * (argc+1);
+
+	result = copyout(arg_offsets_up, (userptr_t)cur_ptr, sizeof(userptr_t) * (argc+1) );
+
+	if(result != 0){
+                return result;
+        }
+
+
+	kfree(arg_offsets);
+        kfree(arg_offsets_up);
+        kfree(args);
+
 	/* Warp to user mode. */
-	enter_new_process(0 /*argc*/, NULL /*userspace addr of argv*/,
-			  stackptr, entrypoint);
-	
+	enter_new_process(argc /*argc*/, (userptr_t)cur_ptr /*userspace addr of argv*/,
+			  cur_ptr, entrypoint);
+
 	/* enter_new_process does not return. */
 	panic("enter_new_process returned\n");
 	return EINVAL;

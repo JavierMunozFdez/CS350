@@ -114,6 +114,8 @@ struct bitmap * proc_id_map;
 // spinlock for the bitmap
 struct spinlock proc_id_map_spinlock;
 
+void proc_clear_as(struct proc *proc);
+
 // Set the exit status of the proc to exitcode
 void proc_set_exit_status ( struct proc *proc, const int exitcode, const int type);
 
