@@ -60,6 +60,8 @@
 #include <vnode.h>
 #include <elf.h>
 
+volatile int done_loading = 1;
+
 /*
  * Load a segment at virtual address VADDR. The segment in memory
  * extends from VADDR up to (but not including) VADDR+MEMSIZE. The
@@ -153,6 +155,7 @@ load_segment(struct addrspace *as, struct vnode *v,
 int
 load_elf(struct vnode *v, vaddr_t *entrypoint)
 {
+	done_loading = 0;
 	Elf_Ehdr eh;   /* Executable header */
 	Elf_Phdr ph;   /* "Program header" = segment header */
 	int result, i;
@@ -297,6 +300,7 @@ load_elf(struct vnode *v, vaddr_t *entrypoint)
 	}
 
 	result = as_complete_load(as);
+	done_loading = 1;
 	if (result) {
 		return result;
 	}

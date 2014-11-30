@@ -20,6 +20,7 @@
   /* this implementation of sys__exit does not do anything with the exit code */
   /* this needs to be fixed to get exit() and waitpid() working properly */
 void sys__exit(int exitcode, int type) {
+ 	(void)type;
   struct addrspace *as;
   struct proc *p = curproc;
 
@@ -44,8 +45,9 @@ void sys__exit(int exitcode, int type) {
 	
 
 	// Parent didnt exit yet, so we must only semi-destroy the proc
-	proc_set_exit_status(p,exitcode, type);
+        p->proc_exit_status = _MKWAIT_EXIT(exitcode);
 
+        p->proc_exited = true;
 	
 	cv_broadcast(p->proc_exit_cv, p->proc_exit_lock);
 

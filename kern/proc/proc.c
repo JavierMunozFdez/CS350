@@ -253,29 +253,6 @@ proc_destroy(struct proc *proc)
 
 }
 
-
-
-// Sets the exit status of the process to true and encodes the exit status
-void proc_set_exit_status(struct proc * proc, const int exitcode, const int type) {
-	switch(type) {
-		case __WEXITED:
-		proc->proc_exit_status = _MKWAIT_EXIT(exitcode);
-		break;
-		case __WSIGNALED:
-		proc->proc_exit_status = _MKWAIT_SIG(exitcode);
-		break;
-		case __WCORED:
-		proc->proc_exit_status = _MKWAIT_CORE(exitcode);
-		break;
-		case __WSTOPPED:
-		proc->proc_exit_status = _MKWAIT_STOP(exitcode);
-		break;
-	}
-	proc->proc_exited = true;
-}
-
-
-
 // Assigns the next avail. pid to the process
 int proc_assign_pid(int * proc_pid_addr_ptr) {
 	if (proc_pid_addr_ptr == NULL) {

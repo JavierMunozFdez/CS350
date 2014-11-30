@@ -37,6 +37,7 @@
 #include <mips/tlb.h>
 #include <addrspace.h>
 #include <vm.h>
+#include <elf.h>
 
 /*
  * Dumb MIPS-only "VM system" that is intended to only be just barely
@@ -106,6 +107,12 @@ vm_tlbshootdown(const struct tlbshootdown *ts)
 	panic("dumbvm tried to do tlb shootdown?!\n");
 }
 
+
+bool address_in_segment(vaddr_t top, vaddr_t bottom, vaddr_t addr);
+bool address_in_segment(vaddr_t top, vaddr_t bottom, vaddr_t addr){
+	return addr >= bottom && addr < top;
+}
+
 int
 vm_fault(int faulttype, vaddr_t faultaddress)
 {
@@ -123,8 +130,14 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 	switch (faulttype) {
 	    case VM_FAULT_READONLY:
 		/* We always create pages read-write, so we can't get this */
-		panic("dumbvm: got VM_FAULT_READONLY\n");
+                 //if(address_in_segment(vtop1,vbase1,faultaddress)){
+			 // check to see if it
+                        //address is in text segment and we are trying to write to it but
+                        // we should not be able to write to this address
+      		return -1;
+                //}
 	    case VM_FAULT_READ:
+		//Tried to read a tlb entry
 	    case VM_FAULT_WRITE:
 		break;
 	    default:
@@ -195,16 +208,40 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 			continue;
 		}
 		ehi = faultaddress;
-		elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
+                bool vaddr_in_text_segment = address_in_segment(vtop1,vbase1,faultaddress);
+                if(vaddr_in_text_segment){
+			if(done_loading == 1){
+				elo = paddr | TLBLO_VALID;
+			}else{
+				elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
+			}
+                }else{
+			elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
+                }
 		DEBUG(DB_VM, "dumbvm: 0x%x -> 0x%x\n", faultaddress, paddr);
 		tlb_write(ehi, elo, i);
 		splx(spl);
 		return 0;
 	}
 
-	kprintf("dumbvm: Ran out of TLB entries - cannot handle page fault\n");
-	splx(spl);
-	return EFAULT;
+	//We have read all the TLB entries and all of them seem to be used
+	//Now we must get rid of a random tlb entry using tlb_random
+		ehi = faultaddress;
+		bool vaddr_in_text_segment = address_in_segment(vtop1,vbase1,faultaddress);
+                if(vaddr_in_text_segment){
+                        if(done_loading == 1){
+                                elo = paddr | TLBLO_VALID;
+                        }else{
+                                elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
+                        }
+                }else{
+                        elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
+                }
+                DEBUG(DB_VM, "dumbvm: 0x%x -> 0x%x\n", faultaddress, paddr);
+                tlb_random(ehi, elo);
+                splx(spl);
+                return 0;
+
 }
 
 struct addrspace *

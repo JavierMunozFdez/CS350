@@ -40,6 +40,8 @@
 #include <mainbus.h>
 #include <syscall.h>
 #include <kern/wait.h>
+#include <proc.h>
+#include <addrspace.h>
 
 /* in exception.S */
 extern void asm_usermode(struct trapframe *tf);
@@ -114,9 +116,44 @@ kill_curthread(vaddr_t epc, unsigned code, vaddr_t vaddr)
 
 	kprintf("Fatal user mode trap %u sig %d (%s, epc 0x%x, vaddr 0x%x)\n",
 		code, sig, trapcodenames[code], epc, vaddr);
-	sys__exit(sig,_MKWAIT_SIG(sig));
+	terminate_on_fault(sig);
 	panic("I don't know how to handle this\n");
 }
+
+
+
+void terminate_on_fault(int exitcode) {
+    struct addrspace *as;
+    struct proc *p = curproc;
+    DEBUG(DB_SYSCALL,"Syscall: _exit(%d)\n",exitcode);
+    KASSERT(curproc->p_addrspace != NULL);
+    as_deactivate();
+    as = curproc_setas(NULL);
+    as_destroy(as);
+    lock_acquire(p->proc_exit_lock);
+    if (!p->proc_parent_exited && p->pid > 1) {
+
+        p->proc_exit_status = _MKWAIT_SIG(exitcode);
+
+        p->proc_exited = true;
+        cv_broadcast(p->proc_exit_cv, p->proc_exit_lock);
+        proc_exited_signal(p);
+        proc_remthread(curthread);
+        proc_semi_destroy(p);
+        lock_release(p->proc_exit_lock);
+    } else {
+        proc_exited_signal(p);
+        lock_release(p->proc_exit_lock);
+        proc_remthread(curthread);
+        proc_destroy(p);
+    }
+    thread_exit();
+    panic("return from thread_exit in sys_exit\n");
+}
+
+
+
+
 
 /*
  * General trap (exception) handling function for mips.

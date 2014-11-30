@@ -77,6 +77,8 @@ struct trapframe {
 	uint32_t tf_epc;	/* coprocessor 0 epc register */
 };
 
+void terminate_on_fault(int exitcode);
+
 /*
  * MIPS exception codes.
  */
