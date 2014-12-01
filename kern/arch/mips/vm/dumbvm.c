@@ -38,6 +38,7 @@
 #include <addrspace.h>
 #include <vm.h>
 #include <elf.h>
+#include <spinlock.h>
 
 /*
  * Dumb MIPS-only "VM system" that is intended to only be just barely
@@ -53,10 +54,37 @@
  * Wrap rma_stealmem in a spinlock.
  */
 static struct spinlock stealmem_lock = SPINLOCK_INITIALIZER;
+volatile int vm_bootstrap_complete = 0;
+paddr_t start_physical_mem = 0;
+paddr_t end_physical_mem = 0;
+volatile int page_frames = 0;
 
 void
 vm_bootstrap(void)
 {
+	//get the ram size after all the kernel-specific structs ahve been added to ram
+	ram_getsize( &start_physical_mem,  &end_physical_mem);
+	spinlock_init(&coremap_spinlock);
+	//spinlock_init(&start_physical_mem_lk);
+	spinlock_acquire(&coremap_spinlock);
+	//spinlock_acquire(&start_physical_mem_lk);
+	//allocate space for coremap
+	//coremap = (struct coremap_frame*)PADDR_TO_KVADDR(start_physical_mem);
+	// get the number of page framez that we can have in the remaining ram
+	page_frames = ((end_physical_mem - start_physical_mem) / PAGE_SIZE); 
+	coremap = (int*)PADDR_TO_KVADDR(start_physical_mem);
+	for(int i = 0; i < page_frames; i++){
+		coremap[i] = 0;
+	}
+	start_physical_mem = ROUNDUP(start_physical_mem,PAGE_SIZE);
+	// offse tthe start of physical mem by adding space for coremap
+	start_physical_mem += sizeof(int) * page_frames;
+	// round to page size
+	start_physical_mem = ROUNDUP(start_physical_mem,PAGE_SIZE);
+	//spinlock_release(&start_physical_mem_lk);
+	// vm bootstrap flag complete
+	spinlock_release(&coremap_spinlock);
+	vm_bootstrap_complete = 1;
 	/* Do nothing. */
 }
 
@@ -65,21 +93,47 @@ paddr_t
 getppages(unsigned long npages)
 {
 	paddr_t addr;
-
-	spinlock_acquire(&stealmem_lock);
-
-	addr = ram_stealmem(npages);
-	
-	spinlock_release(&stealmem_lock);
-	return addr;
+	long s_npages = npages;
+	if( vm_bootstrap_complete == 0){
+		spinlock_acquire(&stealmem_lock);
+		addr = ram_stealmem(npages);
+		spinlock_release(&stealmem_lock);
+		return addr;
+	}else{
+		addr = 0;
+		spinlock_acquire(&coremap_spinlock);
+		long max_so_far = 0;
+		int i;
+		for(i = 0; i < page_frames; i++){
+			if(coremap[i] != 0){
+				max_so_far = 0;
+				continue;
+			}else{
+				max_so_far++;
+				if(max_so_far == s_npages){
+					break;
+				}
+			}
+		}
+		if(max_so_far != 0){
+			addr = start_physical_mem + (PAGE_SIZE * i);
+			for(int j = 0; j < s_npages; j++){
+				coremap[i+j] = npages;
+			}
+		}
+		spinlock_release(&coremap_spinlock);
+		return addr;
+	}
 }
 
 /* Allocate/free some kernel-space virtual pages */
 vaddr_t 
 alloc_kpages(int npages)
 {
+
 	paddr_t pa;
 	pa = getppages(npages);
+
 	if (pa==0) {
 		return 0;
 	}
@@ -90,8 +144,14 @@ void
 free_kpages(vaddr_t addr)
 {
 	/* nothing - leak the memory. */
-
-	(void)addr;
+	paddr_t p_addr = KVADDR_TO_PADDR(addr);
+	long index = (p_addr-start_physical_mem)/PAGE_SIZE;
+	spinlock_acquire(&coremap_spinlock);
+	long npages = coremap[index];
+                        for(long j = 0; j < npages; j++){
+                                coremap[index+j] = 0;
+                        }
+	spinlock_release(&coremap_spinlock); 
 }
 
 void
@@ -134,7 +194,7 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 			 // check to see if it
                         //address is in text segment and we are trying to write to it but
                         // we should not be able to write to this address
-      		return -1;
+      		return EFAULT;
                 //}
 	    case VM_FAULT_READ:
 		//Tried to read a tlb entry
@@ -210,7 +270,7 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 		ehi = faultaddress;
                 bool vaddr_in_text_segment = address_in_segment(vtop1,vbase1,faultaddress);
                 if(vaddr_in_text_segment){
-			if(done_loading == 1){
+			if(as->done_loading == true){
 				elo = paddr | TLBLO_VALID;
 			}else{
 				elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
@@ -229,7 +289,7 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 		ehi = faultaddress;
 		bool vaddr_in_text_segment = address_in_segment(vtop1,vbase1,faultaddress);
                 if(vaddr_in_text_segment){
-                        if(done_loading == 1){
+                        if(as->done_loading == true){
                                 elo = paddr | TLBLO_VALID;
                         }else{
                                 elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
@@ -251,7 +311,7 @@ as_create(void)
 	if (as==NULL) {
 		return NULL;
 	}
-
+	as->done_loading = false;
 	as->as_vbase1 = 0;
 	as->as_pbase1 = 0;
 	as->as_npages1 = 0;
@@ -266,6 +326,22 @@ as_create(void)
 void
 as_destroy(struct addrspace *as)
 {
+        /* Assert that the address space has been set up properly. */
+        KASSERT(as->as_vbase1 != 0);
+        KASSERT(as->as_pbase1 != 0);
+        KASSERT(as->as_npages1 != 0);
+        KASSERT(as->as_vbase2 != 0);
+        KASSERT(as->as_pbase2 != 0);
+        KASSERT(as->as_npages2 != 0);
+        KASSERT(as->as_stackpbase != 0);
+        KASSERT((as->as_vbase1 & PAGE_FRAME) == as->as_vbase1);
+        KASSERT((as->as_pbase1 & PAGE_FRAME) == as->as_pbase1);
+        KASSERT((as->as_vbase2 & PAGE_FRAME) == as->as_vbase2);
+        KASSERT((as->as_pbase2 & PAGE_FRAME) == as->as_pbase2);
+        KASSERT((as->as_stackpbase & PAGE_FRAME) == as->as_stackpbase);
+	free_kpages(PADDR_TO_KVADDR(as->as_pbase1));
+	free_kpages(PADDR_TO_KVADDR(as->as_pbase2));
+	free_kpages(PADDR_TO_KVADDR(as->as_stackpbase));
 	kfree(as);
 }
 

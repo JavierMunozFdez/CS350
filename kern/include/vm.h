@@ -38,12 +38,30 @@
 
 
 #include <machine/vm.h>
+#include <spinlock.h>
 
 /* Fault-type arguments to vm_fault() */
 #define VM_FAULT_READ        0    /* A read was attempted */
 #define VM_FAULT_WRITE       1    /* A write was attempted */
 #define VM_FAULT_READONLY    2    /* A write to a readonly page was attempted*/
 
+
+
+struct coremap_frame{
+        paddr_t page_frame_addr;
+        vaddr_t page_frame_vaddr;
+        bool free;
+        int contiguous_frames;
+};
+
+//struct coremap_frame *coremap;
+int* coremap;
+struct spinlock coremap_spinlock;
+struct spinlock start_physical_mem_lk;
+extern paddr_t start_physical_mem;
+extern paddr_t end_physical_mem;
+extern volatile int page_frames;
+extern volatile int vm_bootstrap_complete;
 
 /* Initialization function */
 void vm_bootstrap(void);

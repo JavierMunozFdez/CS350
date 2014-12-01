@@ -158,6 +158,7 @@ int sys_fork(struct trapframe * tf, pid_t * retval){
 	splx(spl); 
 	if (ret) {
 		proc_destroy(child_proc);
+		free_kpages((vaddr_t)newtf);
 		kfree(newtf);
 		return ret;
 	}
@@ -273,6 +274,12 @@ int sys_execv(userptr_t progname_ptr, userptr_t args_ptr){
 	}
 
 	as_destroy(curproc_as);
+	free_kpages((vaddr_t)arg_offsets);
+ 	free_kpages((vaddr_t)arg_offsets_up);
+ 	free_kpages((vaddr_t)argv);
+ 	free_kpages((vaddr_t)args_ptrs);
+	free_kpages((vaddr_t)prog_name);
+
 	kfree(arg_offsets);
 	kfree(arg_offsets_up);
 	kfree(argv);

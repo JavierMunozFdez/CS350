@@ -78,7 +78,7 @@ typedef struct {
 #define	EI_PAD		9	/* Start of padding bytes up to EI_NIDENT*/
 
 /* Predicate to determine if loading the elf is complete */
-extern volatile int done_loading;
+//extern volatile int done_loading;
 
 /* Values for these fields */
 

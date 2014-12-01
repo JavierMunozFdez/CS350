@@ -86,11 +86,14 @@ runprogram(char *progname, unsigned long argc, char** argv)
 
 	/* Load the executable. */
 	result = load_elf(v, &entrypoint);
+	
 	if (result) {
 		/* p_addrspace will go away when curproc is destroyed */
 		vfs_close(v);
 		return result;
 	}
+	curproc_getas()->done_loading = true;
+	as_activate();
 
 	/* Done with the file now. */
 	vfs_close(v);
